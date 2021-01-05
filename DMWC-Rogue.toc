@@ -1,0 +1,9 @@
+## Interface: 11320
+## Title: DoMeWhen Retail - Rogue
+## Author: Fisker
+## Notes: Rogue Rotation for DoMeWhen Retail
+## DefaultState: Disabled
+## Dependencies: DoMeWhen-Retail
+
+Settings.lua
+Rotation.lua
