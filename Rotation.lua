@@ -3,10 +3,9 @@ local Rogue = DMW.Rotations.ROGUE
 local Rotation = DMW.Helpers.Rotation
 local Unlocked = DMW.Functions.Unlocked
 local Setting = DMW.Helpers.Rotation.Setting
-local Player, Buff, Debuff, Spell, Stance, Target, Talent, Item, GCD, CDs, HUD, EnemyMelee, EnemyMeleeCount, Enemy10Y, Enemy10YC, Enemy30Y,
-Enemy30YC, stealthedRogue, pauseTime, AssassinationOpener, sndCondition, usePriorityRotation, forceStealthed, stopAttacking,
-ShDthreshold, SkipRupture, ComboPoints, bfTTD, shadowDanced, shadowDancedTime, vanished, vanishedTime, thistleTeaed, thistleTeaedTime, tornadoTime, needBTErefresh
-local ShouldReturn
+local Player, Buff, Debuff, Spell, Stance, Target, Talent, Item, GCD, CDs, HUD, EnemyMelee, EnemyMeleeCount, Enemy10Y, Enemy10YC, Enemy20Y, Enemy30Y,
+Enemy30YC, stealthedRogue, sndCondition, usePriorityRotation, stopAttacking,
+ComboPoints, bfTTD, shadowDancedTime, vanished, vanishedTime, kiredTime, thistleTeaedTime, tornadoTime, RTBhighest, RTBlowestKir, finishConditionOutlaw, RTBCount, rtbRerollVar, crackshotEnabled
 local forceroll = false
 local TricksCombat = true
 DMW.Player.RtbCount = 0
@@ -21,10 +20,15 @@ RtbCacheTime = 0
 local reportTable = {
 
 }
--- DMW.Helpers.Swing.InitSwingTimer()
-
-local function report(what, ended)
-  if reportTable[what] == nil and not ended then
+local function num(val)
+  if val then
+    return 1
+  else
+    return 0
+  end
+end
+local function report(what, ended, endedAll)
+  if reportTable[what] == nil and not ended and not endedAll then
     reportTable[what] = DMW.Time
     print(what .. " starts")
   end
@@ -32,30 +36,199 @@ local function report(what, ended)
     print(what .. " took " .. string.format("%0.1f", DMW.Time - reportTable[what]))
     reportTable[what] = nil
   end
+  if endedAll then
+    for k, v in pairs(reportTable) do
+      v = nil
+      print(what)
+    end
+  end
+end
+local function bool(val) return val ~= 0 end
+-- DMW.Helpers.Swing.InitSwingTimer()
+local rtbBuffs = {
+  "Broadside",
+  "BuriedTreasure",
+  "GrandMelee",
+  "RuthlessPrecision",
+  "SkullAndCrossbones",
+  "TrueBearing"
+}
+function RogueTrinkets()
+  if Setting("General Usage") then
+    Item.TrinketAD:Use()
+    Item.Bandolier:Use()
+  end
 end
 
-local function highestBTE()
-  local highestSec
-  for _, Unit in ipairs(EnemyMelee) do
-    if Debuff.BetweenTheEyes:Exist(Unit) then
-      local remainCurrent = Debuff.BetweenTheEyes:Remain(Unit)
-      if highestSec == nil or remainCurrent < highestSec then
-        highestSec = remainCurrent
+local function WillLoseRtBCount()
+  local count = 0
+  for k, v in pairs(rtbBuffs) do
+    if DMW.Player.Buffs[v]:WillLoseRtB() then
+      count = count + 1
+    end
+  end
+  return count
+end
+local function onAnimaCharged()
+  if Talent.EchoingReprimand and HUD.Info ~= 3 and (not Spell.Vanish:CDUp() or HUD.VanishMode == 2 or stealthedRogue) and (not Spell.ShadowDance:CDUp() or HUD.ShadowDance == 2 or stealthedRogue) and ((Buff.Kyrian2p:Exist() and ComboPoints == 2) or
+        (Buff.Kyrian3p:Exist() and ComboPoints == 3) or
+        (Buff.Kyrian4p:Exist() and ComboPoints == 4) or
+        (Buff.Kyrian5p:Exist() and ComboPoints == 5)) then
+    return true
+  end
+  return false
+end
+-- local function RtbRemain()
+--   local RtbRemains = (DMW.Player.RtbEndTime ~= nil and DMW.Player.RtbEndTime - DMW.Time) or 0
+--   return RtbRemains
+-- end
+
+
+
+local function isKired()
+  return kiredTime
+end
+
+local function rtbReroll(preroll)
+  local kirBuffs = 0
+  local procedBuffs = 0
+  local spellBuffs = 0
+  local realBuffs = 0
+  local highest
+  local lowest
+  local lowestKiR
+  local rtbCount = 0
+  for k, v in pairs(rtbBuffs) do
+    if DMW.Player.Buffs[v]:Exist() then
+      rtbCount = rtbCount + 1
+      local dura = DMW.Player.Buffs[v]:Duration()
+      if dura <= 39 and dura > 10 then
+        spellBuffs = spellBuffs + 1
+        realBuffs = realBuffs + 1
+      elseif dura >= 60 then
+        kirBuffs = kirBuffs + 1
+        realBuffs = realBuffs + 1
+      elseif dura <= 10 then
+        procedBuffs = procedBuffs + 1
       end
     end
   end
-  return highestSec or 0
+  -- print(procedBuffs, realBuffs, kirBuffs)
+  for _, v in pairs(rtbBuffs) do
+    if DMW.Player.Buffs[v]:Exist() then
+      local remains = DMW.Player.Buffs[v]:Remain()
+      local dura = DMW.Player.Buffs[v]:Duration()
+      if not highest or remains > highest then
+        highest = remains
+      end
+      if (realBuffs == 0 or dura >= 30) and (not lowest or remains < lowest) then
+        lowest = remains
+      end
+      if (not lowest or remains < lowest) then
+        lowestKiR = remains
+      end
+    end
+  end
+  RTBCount = rtbCount
+  RTBhighest = highest or 99
+  RTBlowest = lowest or 0
+  RTBlowestKir = lowestKiR or 99
+  -- if Player.RtbCount >= 4 then
+  --   return false
+  -- end
+  local willLoseRtBVar = WillLoseRtBCount()
+  -- print(WillLoseRtBCount(), DMW.Time)
+  local shouldRoll = false
+
+  --   # Default Roll the Bones reroll rule: reroll for any buffs that aren't Buried Treasure, excluding Grand Melee in single target
+  -- actions+=/variable,name=rtb_reroll,value=rtb_buffs.will_lose=(rtb_buffs.will_lose.buried_treasure+rtb_buffs.will_lose.grand_melee&spell_targets.blade_flurry<2&raid_event.adds.in>10)
+  if willLoseRtBVar == num(Buff.BuriedTreasure:WillLoseRtB()) + num(EnemyMeleeCount <= 1 and Buff.GrandMelee:WillLoseRtB()) then
+    -- print("reroll bad")
+    shouldRoll = true
+  end
+  -- # Crackshot builds without T31 should reroll for True Bearing (or Broadside without Hidden Opportunity) if we won't lose over 1 buff
+  -- actions+=/variable,name=rtb_reroll,if=talent.crackshot&!set_bonus.tier31_4pc,value=(!rtb_buffs.will_lose.true_bearing&talent.hidden_opportunity|!rtb_buffs.will_lose.broadside&!talent.hidden_opportunity)&rtb_buffs.will_lose<=1
+  -- # Crackshot builds with T31 should reroll if we won't lose over 1 buff (2 with Loaded Dice)
+  -- actions+=/variable,name=rtb_reroll,if=talent.crackshot&set_bonus.tier31_4pc,value=(rtb_buffs.will_lose<=1+buff.loaded_dice.up)
+
+  if not shouldRoll and willLoseRtBVar <= 1 + num(Buff.LoadedDice:Exist()) then
+    shouldRoll = true
+  end
+
+  --   # Hidden Opportunity builds without Crackshot should reroll for Skull and Crossbones or any 2 buffs excluding Grand Melee in single target
+  -- actions+=/variable,name=rtb_reroll,if=!talent.crackshot&talent.hidden_opportunity,value=!rtb_buffs.will_lose.skull_and_crossbones&(rtb_buffs.will_lose<2+rtb_buffs.will_lose.grand_melee&spell_targets.blade_flurry<2&raid_event.adds.in>10)
+  -- # Additional reroll rules if all active buffs will not be rolled away and we don't already have 5+ buffs outside of stealth
+  -- actions+=/variable,name=rtb_reroll,value=variable.rtb_reroll&rtb_buffs.longer=0|rtb_buffs.normal=0&rtb_buffs.longer>=1&rtb_buffs<5&rtb_buffs.max_remains<=39&!stealthed.all
+  if shouldRoll then
+    if kirBuffs == 0 and not stealthedRogue then
+      -- print("reroll + buffs")
+      shouldRoll = true
+    else
+      shouldRoll = false
+    end
+  end
+  if (spellBuffs == 0 and procedBuffs == 0 and kirBuffs >= 1 and RTBCount < 5 and highest <= 39 and not stealthedRogue and Buff.LoadedDice:Exist()) then
+    -- report("kir reroll fish")
+    shouldRoll = true
+  end
+  -- # Avoid rerolls when we will not have time remaining on the fight or add wave to recoup the opportunity cost of the global
+  -- actions+=/variable,name=rtb_reroll,op=reset,if=!(raid_event.adds.remains>12|raid_event.adds.up&(raid_event.adds.in-raid_event.adds.remains)<6|target.time_to_die>12)|fight_remains<12
+  -- if not preroll then
+  --   if #DMW.Enemies == 0 then
+  --     return false
+  --   end
+  --   -- if HUD.Info ~= 1 then
+  --   --   return false
+  --   -- end
+  --   if CDs and Spell.AdrenalineRush:CD() <= 5 and not Buff.LoadedDice:Exist() then
+  --     return false
+  --   end
+  --   if isShadowDanced() or isVanished() or Buff.Subterfuge:Exist() then
+  --     return false
+  --   end
+  -- end
+  -- if Player.RtbCount == 0 then
+  --   return true
+  -- end
+
+
+  -- if Buff.LoadedDice:Exist() and highest <= 7 and (CDs and (Spell.Vanish:CD() <= 3 or Spell.ShadowDance:CD() <= 3)) then
+  --   return true
+  -- end
+
+  -- if Player.RtbCount <= 1 or Player.RtbCount == 2 and Buff.LoadedDice:Exist() then
+  --   return true
+  -- end
+  -- if RTBlowest <= 2 then
+  --   return true
+  -- end
+
+  return shouldRoll
 end
 
-local rtbcacheSpells = {
-  [315508] = true,
-  [193356] = true,
-  [193358] = true,
-  [193357] = true,
-  [199603] = true,
-  [193359] = true,
-  [199600] = true
-}
+
+-- local function highestBTE()
+--   local highestSec
+--   for _, Unit in ipairs(EnemyMelee) do
+--     if Debuff.BetweenTheEyes:Exist(Unit) then
+--       local remainCurrent = Debuff.BetweenTheEyes:Remain(Unit)
+--       if highestSec == nil or remainCurrent < highestSec then
+--         highestSec = remainCurrent
+--       end
+--     end
+--   end
+--   return highestSec or 0
+-- end
+
+-- local rtbcacheSpells = {
+--   [315508] = true,
+--   [193356] = true,
+--   [193358] = true,
+--   [193357] = true,
+--   [199603] = true,
+--   [193359] = true,
+--   [199600] = true
+-- }
 local cloakPlayerlist = {
   [256106] = true, -- FH 1st boss
   [261439] = true, -- Virulent Pathogen WM
@@ -200,19 +373,21 @@ local function RtbCache()
     if DMW.Player.Buffs[spell]:Exist() then
       count = count + 1
       -- print(Spell)
+      -- if DMW.Player.Buffs[spell]:Duration()
       time = select(6, DMW.Player.Buffs[spell]:Query(DMW.Player))
+      if time <= DMW.Player.RtbLowestTime then
+        DMW.Player.RtbLowestTime = time
+      end
       -- print(spell)
       -- print(time)
     end
   end
-
+  DMW.Player.RtbLowestTime = 999999999
   -- print("_________________________________________")
-  cacheRTB("Broadside")
-  cacheRTB("BuriedTreasure")
-  cacheRTB("GrandMelee")
-  cacheRTB("RuthlessPrecision")
-  cacheRTB("SkullAndCrossbones")
-  cacheRTB("TrueBearing")
+  for k, v in pairs(rtbBuffs) do
+    cacheRTB(v)
+  end
+
   -- print("1")
   DMW.Player.RtbEndTime = time
   DMW.Player.RtbCount = count
@@ -220,6 +395,26 @@ local function RtbCache()
   -- print(count, time - DMW.Time)
 end
 
+-- local function RtbLowestTime()
+--   return DMW.Player.RtbLowestTime - DMW.Time
+-- end
+
+
+local function RtbLowestTime()
+  local lowestTime
+  local highestTime
+  for k, v in pairs(rtbBuffs) do
+    if DMW.Player.Buffs[v]:Exist() then
+      if not lowestTime or DMW.Player.Buffs[v]:Remain() < lowestTime then
+        lowestTime = DMW.Player.Buffs[v]:Remain()
+      end
+      if not highestTime or DMW.Player.Buffs[v]:Remain() > highestTime then
+        highestTime = DMW.Player.Buffs[v]:Remain()
+      end
+    end
+  end
+  return lowestTime or 99, highestTime or 99
+end
 -- local function TTM()
 --   local PowerMissing = Player.EnergyMax - Player.Energy
 --   if PowerMissing > 0 then
@@ -277,6 +472,8 @@ local function isVanished()
   return vanishedTime or Buff.Vanish:Exist()
 end
 
+
+
 local function isThistleTeaed()
   return thistleTeaedTime or Buff.ThistleTea:Exist()
 end
@@ -289,10 +486,10 @@ end
 local meleeRangeBoost
 local function Locals()
   Player = DMW.Player
-  if Player.SpecID == "Outlaw" and IsLeftShiftKeyDown() then
+  if Player.SpecID == "Outlaw" and IsLeftControlKeyDown() then
     DMWHUDINFO:Toggle(3)
-  elseif IsLeftControlKeyDown() then
-    DMWHUDINFO:Toggle(2)
+    -- elseif IsLeftShiftKeyDown() then
+    --   DMWHUDINFO:Toggle(2)
   else
     DMWHUDINFO:Toggle(1)
   end
@@ -317,7 +514,7 @@ local function Locals()
   --   end
   -- end
   -- Rage = Player.Rage
-  CDs = Player:CDs() and Target and Target.TTD > 15 and Target.ValidEnemy and Target.Distance < 15
+  CDs = Player:CDs() and Target and Target.ValidEnemy and Target.Distance < 15
   EnemyMelee, EnemyMeleeCount = Player:GetEnemies(5)
   Enemy10Y, Enemy10YC = Player:GetAttackable(10 + meleeRangeBoost)
   -- Enemy30Y, Enemy30YC = Player:GetEnemies(30)
@@ -357,6 +554,11 @@ local function Locals()
       thistleTeaedTime = nil
     end
   end
+  if kiredTime then
+    if DMW.Time - kiredTime >= 5 then
+      kiredTime = nil
+    end
+  end
   -- if Player.ComboPoints ~= oldCP then
   --   oldCP = ComboPoints
   --   print(ComboPoints)
@@ -377,9 +579,28 @@ local function Locals()
     EnemyFOK, EnemyFOKcount = Player:GetEnemies(10)
   elseif Player.SpecID == "Outlaw" then
     bfTTD = Player:GetTTD(EnemyMelee, "lowest2")
+    -- print(DMW.Player:GCDRemain())
     if not Player.RtbCount then RtbCache() end
+    Enemy20Y = Player:GetEnemies(20)
     stealthedRogue = Buff.Stealth:Exist() or isShadowDanced() or Buff.StealthSubterfuge:Exist() or isVanished() or
         Buff.Subterfuge:Remain() > 0.1
+    -- crackshotEnabled = false
+    -- local count = TipsyGuy.GetAuraCount(DMW.Player.GUID)
+    -- if count then
+    --   local check = false
+    --   for i = 1, count do
+    --     local splId = TipsyGuy.GetAuraWithIndex(i)
+    --     --local splName = GetSpellInfo(splId)
+    --     if splId == 424254 then
+    --       crackshotEnabled = true
+    --       break
+    --     end
+    --   end
+    -- end
+    -- RTBlowest, RTBhighest = RtbLowestTime()
+    rtbRerollVar = rtbReroll()
+    finishConditionOutlaw = OutlawShouldFinish()
+    -- print()
   elseif Player.SpecID == "Subtlety" then
     bfTTD = Player:GetTTD(EnemyMelee)
     stealthedRogue = Buff.Stealth:Exist() or Buff.StealthSubterfuge:Exist() or isVanished() or isShadowDanced()
@@ -394,22 +615,9 @@ local function LocalsSubtlety()
   --     (not Talent.Nightstalker and Talent.DarkShadow and Buff.ShadowDance:Exist())
 end
 
-local function RogueTrinkets()
-  if Setting("General Usage") then
-    Item.Whetstone:Use()
-    Item.Manic:Use()
-  end
-end
 
-local function num(val)
-  if val then
-    return 1
-  else
-    return 0
-  end
-end
 
-local function bool(val) return val ~= 0 end
+
 
 local function MythicStuff()
   if not Player.Combat then return end
@@ -606,94 +814,7 @@ local function MythicStuff()
   -- --///
 end
 
-local function RtbRemain()
-  local RtbRemains = (DMW.Player.RtbEndTime ~= nil and DMW.Player.RtbEndTime - DMW.Time) or 0
-  return RtbRemains
-end
 
-local function rtbReroll(preroll)
-  -- # Roll the Bones Reroll Conditions
-  -- actions+=/variable,name=rtb_reroll,if=!talent.hidden_opportunity,value=rtb_buffs<2&(!buff.broadside.up&(!talent.fan_the_hammer|!buff.skull_and_crossbones.up)&!buff.true_bearing.up|buff.loaded_dice.up)|rtb_buffs=2&(buff.buried_treasure.up&buff.grand_melee.up|!buff.broadside.up&!buff.true_bearing.up&buff.loaded_dice.up)
-  -- # Additional Reroll Conditions for Keep it Rolling or Count the Odds
-  -- actions+=/variable,name=rtb_reroll,if=!talent.hidden_opportunity&(talent.keep_it_rolling|talent.count_the_odds),value=variable.rtb_reroll|((rtb_buffs.normal=0&rtb_buffs.longer>=1)&!(buff.broadside.up&buff.true_bearing.up&buff.skull_and_crossbones.up)&!(buff.broadside.remains>39|buff.true_bearing.remains>39|buff.ruthless_precision.remains>39|buff.skull_and_crossbones.remains>39))
-  -- # With Hidden Opportunity, prioritize rerolling for Skull and Crossbones over everything else
-  -- actions+=/variable,name=rtb_reroll,if=talent.hidden_opportunity,value=!rtb_buffs.will_lose.skull_and_crossbones&(rtb_buffs.will_lose-rtb_buffs.will_lose.grand_melee)<2+buff.loaded_dice.up
-  -- # Avoid rerolls when we will not have time remaining on the fight or add wave to recoup the opportunity cost of the global
-  -- actions+=/variable,name=rtb_reroll,op=reset,if=!(raid_event.adds.remains>12|raid_event.adds.up&(raid_event.adds.in-raid_event.adds.remains)<6|target.time_to_die>12)|fight_remains<12
-  -- if Player:GetTTD(EnemyMelee) < 8 and Player.CombatTime >= 4 and
-  --     (not Buff.LoadedDice:Exist() or Buff.LoadedDice:Remain() > 4) then
-  --   return false
-  -- end
-  if not preroll then
-    if #DMW.Enemies == 0 then
-      return false
-    end
-    if HUD.Info ~= 1 then
-      return false
-    end
-    if CDs and Spell.AdrenalineRush:CD() <= 5 and not Buff.LoadedDice:Exist() then
-      return false
-    end
-    if isShadowDanced() or Buff.DreadBlades:Exist() or isVanished() or Buff.Subterfuge:Exist() then
-      return false
-    end
-  end
-  if Player.RtbCount == 0 then
-    return true
-  end
-  if Buff.Broadside:Duration() < 30 and
-      Buff.BuriedTreasure:Duration() < 30 and
-      Buff.GrandMelee:Duration() < 30 and
-      Buff.RuthlessPrecision:Duration() < 30 and
-      Buff.SkullAndCrossbones:Duration() < 30 and
-      Buff.TrueBearing:Duration() < 30 then
-    return true
-  end
-  if Buff.SkullAndCrossbones:Exist() then
-    return false
-  end
-
-
-  if Player.RtbCount > 2 then
-    return false
-  end
-  -- if not Buff.LoadedDice:Exist() then
-  --   if (Buff.Broadside:Exist() or Buff.SkullAndCrossbones:Exist() or Buff.TrueBearing:Exist()) then
-  --     return false
-  --   end
-  --   if (Player.RtbCount == 2) then
-  --     if Buff.GrandMelee:Exist() and Buff.BuriedTreasure:Exist() then
-  --       return true
-  --     end
-  --     return false
-  --   end
-  -- else
-  if Player.RtbCount == 1 then
-    return true
-  end
-  -- if Player.RtbCount == 2 then
-  --   if Buff.Broadside:Exist() or Buff.SkullAndCrossbones:Exist() or Buff.TrueBearing:Exist() then
-  --     return false
-  --   else
-  --     return true
-  --   end
-  -- end
-  if Player.RtbCount == 2 then
-    if Buff.GrandMelee:Exist() then
-      return true
-    else
-      return false
-    end
-  end
-  -- end
-
-  return true
-  -- if Player.RtbCount < 2 and not Buff.Broadside:Exist() and not Buff.SkullAndCrossbones:Exist() then
-  --   return true
-  -- end
-  -- if Player.RtbCount == 2 and Buff.GrandMelee:Exist() and Buff.BuriedTreasure:Exist() then return true end
-  -- return false
-end
 
 function OutlawShouldFinish()
   -- 	variable,name=finish_condition,value=combo_points>=cp_max_spend-buff.broadside.up-(buff.opportunity.up*(talent.quick_draw|talent.fan_the_hammer)|buff.concealed_blunderbuss.up)|effective_combo_points>=cp_max_spend
@@ -702,19 +823,26 @@ function OutlawShouldFinish()
   --   if ComboPoints >= ComboPointsMax - num()
   -- combo_points>=cp_max_spend-(buff.broadside.up+buff.opportunity.up)*(talent.quick_draw.enabled&(!talent.marked_for_death.enabled|cooldown.marked_for_death.remains>1))*(azerite.ace_up_your_sleeve.rank<2|!cooldown.between_the_eyes.up)|combo_points=animacharged_cp
   -- combo_points>=cp_max_spend-buff.broadside.up-(buff.opportunity.up*talent.quick_draw.enabled)|combo_points=animacharged_cp
-  if Talent.EchoingReprimand then
-    if (Buff.Kyrian2p:Exist() and ComboPoints == 2) or
-        (Buff.Kyrian3p:Exist() and ComboPoints == 3) or
-        (Buff.Kyrian4p:Exist() and ComboPoints == 4) or
-        (Buff.Kyrian5p:Exist() and ComboPoints == 5) then
-      return true
-    end
+  -- if Talent.EchoingReprimand then
+  --   if (Buff.Kyrian2p:Exist() and ComboPoints == 2) or
+  --       (Buff.Kyrian3p:Exist() and ComboPoints == 3) or
+  --       (Buff.Kyrian4p:Exist() and ComboPoints == 4) or
+  --       (Buff.Kyrian5p:Exist() and ComboPoints == 5) then
+  --     return true
+  --   end
+  -- end
+  if Player.LastCast and Player.LastCast[1] and Player.LastCast[1].SpellID == 13750 and DMW.Time - Player.LastCast[1].CastTime < 0.3 then
+    -- print("last adrenaline rush ")
+    return true
+  end
+  if onAnimaCharged() then
+    return true
   end
   -- effective_combo_points>=cp_max_spend-1-(stealthed.all&talent.crackshot)
-  local FinishCPs = Talent.CrackShot and stealthedRogue and 2 or 1
+  local FinishCPs = Player.ComboPointsMax - 1 - num(stealthedRogue and Talent.CrackShot)
   --num(Buff.Broadside:Exist() or Buff.Opportunity:Exist())
   -- print(Player.ComboPointsDeficit)
-  if ComboPoints >= Player.ComboPointsMax - FinishCPs then return true end
+  if ComboPoints >= FinishCPs then return true end
   return false
 end
 
@@ -726,7 +854,7 @@ end
 
 local sndCP = { 12, 18, 24, 30, 36, 42, 48 }
 local function SnDRefresh()
-  if Buff.SliceAndDice:Remain() <= 0.3 * sndCP[Player.ComboPoints] and Player:CombatTime() > 4 then
+  if Buff.SliceAndDice:Remain() <= 0.3 * sndCP[Player.ComboPoints] and Player.CombatTime > 4 then
     -- if Buff.SliceAndDice:Remain() < 12 then
     return true
   end
@@ -740,22 +868,31 @@ local function OutlawFinishers(anima)
   else
     --     # Crackshot builds use Between the Eyes outside of Stealth if Vanish or Dance will not come off cooldown within the next cast
     -- actions.finish+=/between_the_eyes,if=talent.crackshot&(cooldown.vanish.remains>45&cooldown.shadow_dance.remains>12)
-    if HUD.Info == 1 and ((Spell.Vanish:CD() > 45 and Spell.ShadowDance:CD() > 12) or not CDs) then
+    if (((Spell.Vanish:CD() > 45 or HUD.VanishMode == 2) and (Spell.ShadowDance:CD() > 12 or HUD.ShadowDance == 2))) and HUD.Info ~= 3 or stealthedRogue then
       if Spell.BetweenTheEyes:IsCastable(20) then
         if Setting("BTE HP Check") then
-          local hpUnit, hpValue
-          for _, Unit in ipairs(EnemyMelee) do
-            if not hpValue or Unit.Health >= 1.3 * hpValue then
-              hpUnit = Unit
-              hpValue = Unit.Health
+          -- local hpUnit, hpValue
+          for _, Unit in ipairs(Enemy20Y) do
+            -- if not hpValue or Unit.Health >= 1.3 * hpValue then
+            if Debuff.GhostlyStrike:Exist(Unit) then
+              if Spell.BetweenTheEyes:Cast(Unit) then
+                TipsyGuy.SecureCode("StartAttack")
+                return true
+              end
             end
+            -- end
           end
-          if hpUnit then
-            if Spell.BetweenTheEyes:Cast(hpUnit) then return true end
+
+          -- if hpUnit then
+          if Spell.BetweenTheEyes:Cast(Unit) then
+            TipsyGuy.SecureCode("StartAttack")
+            return true
           end
+          -- end
         else
           if Target then
             if Spell.BetweenTheEyes:Cast(Target) then
+              TipsyGuy.SecureCode("StartAttack")
               return true
             end
           end
@@ -788,17 +925,17 @@ local function OutlawFinishers(anima)
   --     return true
   -- end
 
-  if Player.ComboPoints == 6 and Buff.Tier2P:Exist() and Spell.Ambush:IsReady() then
-    -- print("Ambush forced 2p")
+  -- if Player.ComboPoints == 6 and Buff.Tier2P:Exist() and Spell.Ambush:IsReady() then
+  --   -- print("Ambush forced 2p")
 
-    for _, Unit in ipairs(EnemyMelee) do
-      if Spell.Ambush:Cast(Unit) then return true end
-    end
-  end
+  --   for _, Unit in ipairs(EnemyMelee) do
+  --     if Spell.Ambush:Cast(Unit) then return true end
+  --   end
+  -- end
   if Spell.Dispatch:IsCastable(5) then -- and not forceroll and not rtbReroll() then --and cd.betweenTheEyes.remain() >= 0.2 then
-    if HUD.Info == 1 and Spell.ColdBlood:IsReady() then
-      Spell.ColdBlood:Cast(Player)
-    end
+    -- if HUD.Info == 1 and Spell.ColdBlood:IsReady() then
+    --   Spell.ColdBlood:Cast(Player)
+    -- end
     for _, Unit in ipairs(EnemyMelee) do if Spell.Dispatch:Cast(Unit) then return true end end
     -- return true
   end
@@ -823,22 +960,31 @@ local function OutlawStealth()
   -- actions.stealth+=/cold_blood,if=variable.finish_condition
   -- actions.stealth+=/between_the_eyes,if=variable.finish_condition&talent.crackshot
   -- actions.stealth+=/dispatch,if=variable.finish_condition
-  if OutlawShouldFinish() then
-    if Talent.CrackShot and Spell.BetweenTheEyes:IsCastable(5) then
+  if finishConditionOutlaw then
+    if Talent.CrackShot and Spell.BetweenTheEyes:IsCastable(20) then
       if Setting("BTE HP Check") then
-        local hpUnit, hpValue
-        for _, Unit in ipairs(EnemyMelee) do
-          if not hpValue or Unit.Health >= 1.3 * hpValue then
-            hpUnit = Unit
-            hpValue = Unit.Health
+        -- local hpUnit, hpValue
+        for _, Unit in ipairs(Enemy20Y) do
+          -- if not hpValue or Unit.Health >= 1.3 * hpValue then
+          if Debuff.GhostlyStrike:Exist(Unit) then
+            if Spell.BetweenTheEyes:Cast(Unit) then
+              TipsyGuy.SecureCode("StartAttack")
+              return true
+            end
           end
+          -- end
         end
-        if hpUnit then
-          if Spell.BetweenTheEyes:Cast(hpUnit) then return true end
+
+        -- if hpUnit then
+        if Spell.BetweenTheEyes:Cast(Unit) then
+          TipsyGuy.SecureCode("StartAttack")
+          return true
         end
+        -- end
       else
         if Target then
           if Spell.BetweenTheEyes:Cast(Target) then
+            TipsyGuy.SecureCode("StartAttack")
             return true
           end
         end
@@ -860,8 +1006,16 @@ local function OutlawStealth()
   end
   -- actions.stealth+=/ambush,if=talent.hidden_opportunity
   if Talent.HiddenOpportunity then
-    for _, Unit in ipairs(EnemyMelee) do
-      if Spell.Ambush:Cast(Unit) then return true end
+    if Buff.Audacity:Exist() then
+      if Spell.Ambush:IsReady() then
+        for _, Unit in ipairs(EnemyMelee) do
+          if Spell.AmbushAudacity:Cast(Unit) then return true end
+        end
+      end
+    else
+      for _, Unit in ipairs(EnemyMelee) do
+        if Spell.Ambush:Cast(Unit) then return true end
+      end
     end
   end
 end
@@ -882,12 +1036,13 @@ local function OutlawBuilders()
   -- end
   -- energy<45|talent.quick_draw.enabled&buff.keep_your_wits_about_you.down
   -- ghostly_strike,if=debuff.ghostly_strike.remains<=3&(spell_targets.blade_flurry<=2|buff.dreadblades.up)&!buff.subterfuge.up&target.time_to_die>=5
-  if Talent.GhostlyStrike and EnemyMeleeCount == 1 and Target and HUD.GhostlyStrike == 1 then
-    if Debuff.GhostlyStrike:Remain(Target) <= 3 and not Buff.Subterfuge:Exist() and not Buff.Stealth:Exist() and
-        not Buff.StealthSubterfuge:Exist() and
-        not Buff.ShadowDance:Exist() and
-        not isVanished() and Target.TTD >= 5 then
-      if Spell.GhostlyStrike:Cast(Target) then return true end
+  if Talent.GhostlyStrike and HUD.Info ~= 3 and HUD.GhostlyStrike == 1 and Player.ComboPointsDeficit > 0 and not onAnimaCharged() and (not Player.LastCast[1] or Player.LastCast[1].SpellID ~= 315341) then
+    if Spell.GhostlyStrike:IsCastable("Melee") then
+      for _, Unit in ipairs(EnemyMelee) do
+        if Unit.TTD >= 5 then
+          if Spell.GhostlyStrike:Cast(Unit) then return true end
+        end
+      end
     end
   end
   -- ambush,if=talent.hidden_opportunity&buff.audacity.up|talent.find_weakness&debuff.find_weakness.down
@@ -917,13 +1072,40 @@ local function OutlawBuilders()
   --   for _, Unit in ipairs(Player:GetEnemies(20)) do if Spell.PistolShot:Cast(Unit) then return true end end
   -- end
   -- if Spell.Ambush:IsCastable("Melee") then
-  if Buff.Audacity:Exist() then
-    -- local remainTime = math.max(Buff.ShadowDance:Remain(), Buff.Audacity:Remain(), Buff.Subterfuge:Remain())
-
-    for _, Unit in ipairs(EnemyMelee) do
-      if Spell.Ambush:Cast(Unit) then return true end
+  if Talent.HiddenOpportunity then
+    if Spell.PistolShot:IsCastable(20) then
+      if Buff.Opportunity:Exist() and Buff.Broadside:Exist() and Player.ComboPoints <= 1 and (Buff.Subterfuge:Exist() or Buff.Stealth:Exist() or isShadowDanced() or isVanished()) then
+        for _, Unit in ipairs(Enemy20Y) do
+          if Spell.PistolShot:Cast(Unit) then return true end
+        end
+      end
     end
-    if HUD.BladerushMode == 1 and HUD.Info == 1 and Spell.BladeRush:CDUp() then
+    if Buff.Audacity:Exist() then
+      -- local remainTime = math.max(Buff.ShadowDance:Remain(), Buff.Audacity:Remain(), Buff.Subterfuge:Remain())
+      if Spell.Ambush:IsReady() then
+        for _, Unit in ipairs(EnemyMelee) do
+          if Spell.AmbushAudacity:Cast(Unit) then return true end
+        end
+      end
+      if HUD.BladerushMode == 1 and HUD.Info == 1 and Spell.BladeRush:CDUp() then
+        if not isShadowDanced() or TTM(50) >= 1 then
+          for _, Unit in ipairs(EnemyMelee) do
+            if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
+              if Spell.BladeRush:Cast(Unit) then return true end
+            end
+          end
+        end
+      end
+      -- if TTM(50) <= remainTime then
+      --   return true
+      -- end
+      -- if Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Stacks() > 3 then
+      --   for _, Unit in ipairs(Player:GetEnemies(20)) do if Spell.PistolShot:Cast(Unit) then return true end end
+      -- end
+    end
+    -- end
+    if Setting("BladeRush on AOE targets") > 0 and HUD.BladerushMode == 1 and EnemyMeleeCount >= Setting("BladeRush on AOE targets") and
+        Buff.BladeFlurry:Exist() and TTM() >= 2 then
       if not isShadowDanced() or TTM(50) >= 1 then
         for _, Unit in ipairs(EnemyMelee) do
           if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
@@ -932,39 +1114,87 @@ local function OutlawBuilders()
         end
       end
     end
-    -- if TTM(50) <= remainTime then
-    --   return true
+
+    -- :ps:  Pistol Shot in stealth with an  :ps:  Opportunity proc and :rtb_bs: Broadside and 0-1cp
+    -- :ambush:  Ambush when  :ambush:  Audacity is active or you are in stealth. Outside of stealth, still use even if you are at 5cp.
+    -- :ps:  Pistol Shot with an  :ps:  Opportunity proc any time Ambush is not available. Still use even if you are at 5cp.
+    -- :ss:  Sinister Strike
+
+
+    -- if Spell.PistolShot:IsCastable(20) then
+    --   if Buff.Opportunity:Exist() and Buff.Broadside:Exist() and Player.ComboPoints <= 1 and (Buff.Subterfuge:Exist() or Buff.Stealth:Exist() or isShadowDanced() or isVanished()) then
+    --     for _, Unit in ipairs(EnemyMelee) do
+    --       if Spell.PistolShot:Cast(Unit) then return true end
+    --     end
+    --   end
     -- end
-    -- if Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Stacks() > 3 then
+
+    if Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Exist() then
+      for _, Unit in ipairs(Enemy20Y) do if Spell.PistolShot:Cast(Unit) then return true end end
+    end
+
+
+
+
+
+    -- if Talent.Audacity and Talent.HiddenOpportunity and Talent.FanTheHammer and Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Exist() and not Buff.Audacity:Exist() then
+    --   for _, Unit in ipairs(EnemyMelee) do if Spell.PistolShot:Cast(Unit) then return true end end
+    -- end
+    -- if Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Exist() and
+    --     not Buff.Stealth:Exist() and not Buff.StealthSubterfuge:Exist() and not isVanished() and
+
+    --     (Player.Energy < 30 or Buff.Opportunity:Stacks() == 6 or Buff.Opportunity:Remain() < 2) then
     --   for _, Unit in ipairs(Player:GetEnemies(20)) do if Spell.PistolShot:Cast(Unit) then return true end end
     -- end
-  end
-  -- end
-  if Setting("BladeRush on AOE targets") > 0 and HUD.BladerushMode == 1 and EnemyMeleeCount >= Setting("BladeRush on AOE targets") and
-      Buff.BladeFlurry:Exist() and TTM() >= 2 then
-    if not isShadowDanced() or TTM(50) >= 1 then
+    if Buff.Audacity:Exist() then
+      return true
+    end
+    if Spell.SinisterStrike:IsCastable("Melee") then
       for _, Unit in ipairs(EnemyMelee) do
-        if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
-          if Spell.BladeRush:Cast(Unit) then return true end
+        if Spell.SinisterStrike:Cast(Unit) then
+          return true
         end
       end
     end
-  end
-  if Talent.Audacity and Talent.HiddenOpportunity and Talent.FanTheHammer and Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Exist() and not Buff.Audacity:Exist()
-  then
-    for _, Unit in ipairs(EnemyMelee) do if Spell.PistolShot:Cast(Unit) then return true end end
-  end
-  if Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Exist() and
-      not Buff.Stealth:Exist() and not Buff.StealthSubterfuge:Exist() and not isVanished() and
-
-      (Player.Energy < 30 or Buff.Opportunity:Stacks() == 6 or Buff.Opportunity:Remain() < 2) then
-    for _, Unit in ipairs(Player:GetEnemies(20)) do if Spell.PistolShot:Cast(Unit) then return true end end
-  end
-  if Buff.Audacity:Exist() then
-    return true
-  end
-  if Spell.SinisterStrike:IsCastable("Melee") then
-    for _, Unit in ipairs(EnemyMelee) do if Spell.SinisterStrike:Cast(Unit) then return true end end
+  else
+    if Talent.DeftManeuvers and EnemyMeleeCount >= 5 and Player.ComboPoints <= 1 and Spell.BladeFlurry:IsReady() then
+      if Spell.BladeFlurry:Cast() then return true end
+    end
+    if Talent.DeftManeuvers and EnemyMeleeCount >= 3 and EnemyMeleeCount <= 4 and Spell.BladeFlurry:IsReady() and Player.ComboPointsDeficit == EnemyMeleeCount then
+      if Spell.BladeFlurry:Cast() then return true end
+    end
+    if Talent.EchoingReprimand and Spell.EchoingReprimand:IsReady() and Player.ComboPointsDeficit >= 1 then
+      for _, Unit in ipairs(EnemyMelee) do
+        if Spell.EchoingReprimand:Cast(Unit) then return true end
+      end
+    end
+    if Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Exist() and
+        (not Buff.Broadside:Exist() and ComboPoints <= 3 or
+          Buff.Broadside:Exist() and ComboPoints == 1 or
+          Buff.Opportunity:Stacks() == 6) then
+      for _, Unit in ipairs(Enemy20Y) do
+        if Spell.PistolShot:Cast(Unit) then
+          -- print(Player.ComboPoints)
+          return true
+        end
+      end
+    end
+    if Spell.SinisterStrike:IsCastable("Melee") then
+      for _, Unit in ipairs(EnemyMelee) do
+        if Spell.SinisterStrike:Cast(Unit) then
+          -- print(Player.ComboPoints)
+          return true
+        end
+      end
+    end
+    if Spell.PistolShot:IsCastable(20) and Buff.Opportunity:Exist() then
+      for _, Unit in ipairs(Enemy20Y) do
+        if Spell.PistolShot:Cast(Unit) then
+          -- print(Player.ComboPoints)
+          return true
+        end
+      end
+    end
   end
 end
 
@@ -1404,20 +1634,20 @@ local function CrowdControl()
   end
 end
 
-hooksecurefunc(DMW.Functions.AuraCache, "Event", function(...)
-  local timeStamp, param, hideCaster, source, sourceName, sourceFlags, sourceRaidFlags, destination, destName, destFlags, destRaidFlags,
-  spell, spellName, _, spellType = ...
-  if DMW.Player.SpecID == "Outlaw" then
-    if DMW.Time and DMW.Time - RtbCacheTime >= 3 and destination == DMW.Player.GUID and
-        source == destination then
-      if rtbcacheSpells[spell] then
-        RtbCacheTime = DMW.Time;
-        C_Timer.After(0.2, function() RtbCache() end)
-      end
-    end
-    -- elseif DMW.Player.SpecID == "Subtlety" then
-  end
-end)
+-- hooksecurefunc(DMW.Functions.AuraCache, "Event", function(...)
+--   local timeStamp, param, hideCaster, source, sourceName, sourceFlags, sourceRaidFlags, destination, destName, destFlags, destRaidFlags,
+--   spell, spellName, _, spellType = ...
+--   if DMW.Player.SpecID == "Outlaw" then
+--     if DMW.Time and DMW.Time - RtbCacheTime >= 3 and destination == DMW.Player.GUID and
+--         source == destination then
+--       if rtbcacheSpells[spell] then
+--         RtbCacheTime = DMW.Time;
+--         C_Timer.After(0.2, function() RtbCache() end)
+--       end
+--     end
+--     -- elseif DMW.Player.SpecID == "Subtlety" then
+--   end
+-- end)
 
 
 -- hooksecurefunc(DMW.Functions.AuraCache, "Update", function(...)
@@ -2724,7 +2954,7 @@ local function SubtletyCooldowns()
       vanishambush = DMW.Time
       vanishedTime = DMW.Time
       DMW.Player.VanishAmbush = nil
-      StopAttack()
+      -- TipsyGuy.SecureCode("StopAttack")
       return true
     end
   end
@@ -2804,12 +3034,17 @@ local function SubtletyCooldowns()
   -- actions.cds+=/use_items,if=buff.symbols_of_death.up|fight_remains<20
 end
 
+
 -- local followingTarget = false
 function Rogue.Rotation()
   Locals()
+  -- if stealthedRogue then
+  --   -- print(DMW.Time)
+  -- end
+  -- print(RtbLowestTime())
   if MythicStuff() then return true end
   if Player.Casting or Buff.Shroud:Exist() then return end
-  if Setting("PreRoll") and Player.SpecID == "Outlaw" and Target and Target.Attackable and Target.Distance <= 10 and
+  if Setting("PreRoll") and Player.SpecID == "Outlaw" and Target and Target.Attackable and Target.Distance <= 22 and
       Player.Moving and (Buff.Stealth:Exist() or Buff.StealthSubterfuge:Exist()) then
     Tricks()
     if Spell.SliceAndDice:IsReady() and Player.ComboPoints >= 3 and
@@ -2817,18 +3052,18 @@ function Rogue.Rotation()
       if Spell.SliceAndDice:Cast(Player) then return true end
     end
 
-    if not CDs then
-      if Spell.RollTheBones:CDUp() and rtbReroll(true) and (Spell.AdrenalineRush:CDDown() or Buff.LoadedDice:Exist()) then
-        if Spell.RollTheBones:Cast(Player) then return true end
-      end
-    else
-      if Spell.AdrenalineRush:CDUp() and Spell.RollTheBones:CDUp() and not Buff.LoadedDice:Exist() then
-        Spell.AdrenalineRush:Cast()
-      end
-      if Spell.RollTheBones:CDUp() and rtbReroll(true) then
-        if Spell.RollTheBones:Cast(Player) then return true end
-      end
-    end
+    -- if not CDs then
+    --   if Spell.RollTheBones:CDUp() and rtbRerollVar and (Spell.AdrenalineRush:CDDown() or Buff.LoadedDice:Exist()) then
+    --     if Spell.RollTheBones:Cast(Player) then return true end
+    --   end
+    -- else
+    --   if Spell.AdrenalineRush:CDUp() and Spell.RollTheBones:CDUp() and not Buff.LoadedDice:Exist() and (not Buff.AdrenalineRush:Exist() or Player.ComboPoints <= 2) then
+    --     Spell.AdrenalineRush:Cast()
+    --   end
+    --   if Spell.RollTheBones:CDUp() and rtbRerollVar then
+    --     if Spell.RollTheBones:Cast(Player) then return true end
+    --   end
+    -- end
   end
   if Setting("Dont open from Stealth") and Player.SpecID ~= "Outlaw" and
       (Buff.Stealth:Exist() or Buff.StealthSubterfuge:Exist()) then
@@ -2839,7 +3074,8 @@ function Rogue.Rotation()
   if Player.Combat then
     if Target and Target:CCed() then
       if IsCurrentSpell(Spell.Attack.SpellID) then
-        StopAttack()
+        -- print("CC STOP ATTACK")
+        TipsyGuy.SecureCode("StopAttack")
       end
       return
     end
@@ -2852,6 +3088,7 @@ function Rogue.Rotation()
     if Target and Target.ValidEnemy and Target.Distance <= 5 and not IsCurrentSpell(Spell.Attack.SpellID) and
         not stealthedRogue and
         Target:Facing(0.5) and not stopAttacking then
+      -- print("start attack")
       -- StartAttack()
       TipsyGuy.SecureCode("StartAttack")
       -- Unlocked.StartAttack()
@@ -2870,7 +3107,7 @@ function Rogue.Rotation()
     --   if followingTarget and Target and Target.Distance < 5 then StopMoving() end
     -- end
   end
-  if Player:InterruptsMode() ~= 4 and Spell.Kick:CDUp() then
+  if Player:InterruptsMode() ~= 4 and Spell.Kick:CDUp() and not (Buff.Stealth:Exist() and Buff.Vanish:Exist()) then
     for _, Unit in pairs(EnemyMelee) do
       if Unit:Interrupt() then
         Spell.Kick:Cast(Unit)
@@ -2885,8 +3122,19 @@ function Rogue.Rotation()
 
   if Poisons() then return end
   if Player.SpecID == "Subtlety" then
-    if (Target and Target.ValidEnemy and Target.Distance <= 5) or Player:CombatTime() > 0 or Player:CombatLeftTime() < 3 then
+    if Spell.SurikenThrow:IsReady() then
+      for _, Unit in ipairs(DMW.Attackable) do
+        -- if Debuff.Moonfire:Refresh(Unit) then
+        if Unlocked.IsSpellInRange(Spell.SurikenThrow.SpellName, Unit.GUID) == 1 and not Unit:HasThreat() and not Unlocked.UnitIsTapDenied(Unit.GUID) then --not Debuff.Moonfire:Exist(Unit) then --and Unlocked.UnitAffectingCombat(Unit.GUID) then -- not Unit:HasThreat() and not Unlocked.UnitIsTapDenied(Unit.GUID) and
+          -- print(Unit.Name, Unit.Health, Unit.Distance, TipsyGuy.UnitTarget(Unit.Pointer))
+          if Spell.SurikenThrow:Cast(Unit) then return true end
+        end
+      end
+    end
+    if (Target and Target.ValidEnemy and Target.Distance <= 5) or Player.CombatTime > 0 or Player.CombatLeftTime < 3 then
       LocalsSubtlety()
+
+
       -- # Executed every time the actor is available.
       -- # Restealth if possible (no vulnerable enemies in combat)
       -- actions=stealth
@@ -2960,9 +3208,9 @@ function Rogue.Rotation()
     end
   elseif Player.SpecID == "Outlaw" then
     if PrecombatOutlaw() then return end
-    if Player.SpecID == "Outlaw" and vanishambush then
-      if DMW.Time - vanishambush > 1 then
-        -- print(DMWishambush off vanish1sec", DMW.Time)
+    if Player.SpecID == "Outlaw" and vanishambush and Target then
+      if DMW.Time - vanishambush > 0.3 then
+        -- print("ambush off van  ish1sec", DMW.Time)
 
         vanishambush = false
         return
@@ -2974,25 +3222,44 @@ function Rogue.Rotation()
       if Target then
         -- print("cast ambush")
         -- TipsyGuy.SecureCode("CastSpellByID", 8676, Target.GUID)
-        Unlocked.CastSpellByID(8676, Target.Object)
+        Unlocked.CastSpellByID(315341, Target.GUID)
         return
       end
       return true
     end
-    if Buff.Stealth:Exist() or Buff.StealthSubterfuge:Exist() then
-      if IsCurrentSpell(Spell.Attack.SpellID) then
-        StopAttack()
+    if Debuff.Bursting:Stacks(Player, false) >= 4 then
+      for _, Unit in ipairs(EnemyMelee) do
+        if Unit.TTD < 2 then
+          print(DMW.Time, "Bursting " .. Debuff.Bursting:Stacks(Player, false))
+          return true
+        end
       end
+    end
+    if Buff.Stealth:Exist() or Buff.StealthSubterfuge:Exist() then
+      -- if IsCurrentSpell(Spell.Attack.SpellID) then
+      --   TipsyGuy.SecureCode("StopAttack")
+      -- end
       if Setting("Dont open from Stealth") then
         return true
       else
         if Target and Target.ValidEnemy and Target.Distance < 5 then
-          if Talent.Subterfuge and Enemy10YC > 1 then
+          if Enemy10YC > 1 and not Buff.BladeFlurry:Exist() then
             if Spell.BladeFlurry:Cast(Player) then return true end
+          end
+          if Player.ComboPoints >= 5 and Spell.BetweenTheEyes:IsReady() then
+            if Spell.BetweenTheEyes:Cast(Target) then return true end
           else
-            if Spell.Ambush:IsReady() then
-              for _, Unit in ipairs(EnemyMelee) do
-                if Spell.Ambush:Cast(Unit) then return true end
+            if Talent.HiddenOpportunity then
+              if Spell.Ambush:IsReady() then
+                for _, Unit in ipairs(EnemyMelee) do
+                  if Spell.Ambush:Cast(Unit) then return true end
+                end
+              end
+            else
+              if Spell.SinisterStrike:IsReady() then
+                for _, Unit in ipairs(EnemyMelee) do
+                  if Spell.Ambush:Cast(Unit) then return true end
+                end
               end
             end
           end
@@ -3000,128 +3267,103 @@ function Rogue.Rotation()
       end
       return true
     end
-
-    if OutlawExplosives() then return end
+    -- if OutlawExplosives() then return end
     if CDs and EnemyMeleeCount > 0 then
-      -- if Setting("General Usage") then
-      --   if highestBTE() > 0 then --Debuff.BetweenTheEyes:Exist(Target) then
-      --     if TTM() >= 2 and not Buff.Subterfuge:Exist() and not isShadowDanced() and not isVanished() and
-      --         (not Buff.Stealth:Exist() and not Buff.StealthSubterfuge:Exist()) and
-      --         Player:StandingTime() >= 1 and
-      --         Item.Manic:Equipped() and
-      --         Item.Manic:IsReady() then
-      --       Item.Manic:Use(Target)
-      --       return
-      --     end
-      --     Item.Whetstone:Use()
-      --   end
+      -- actions.cds=adrenaline_rush,if=!buff.adrenaline_rush.up&(!variable.finish_condition|!talent.improved_adrenaline_rush)|stealthed.all&talent.crackshot&talent.improved_adrenaline_rush&combo_points<=2
+
+      -- if Spell.AdrenalineRush:IsReady() and not Buff.LoadedDice:Exist() and (not Buff.AdrenalineRush:Exist() or Player.ComboPoints <= 2) then
+      --   Spell.AdrenalineRush:Cast(Player)
       -- end
-      if Spell.AdrenalineRush:IsReady() and not Buff.LoadedDice:Exist() then
-        Spell.AdrenalineRush:Cast(Player)
+      if Buff.BetweenTheEyes:Exist() then
+        RogueTrinkets()
+      end
+      if Spell.AdrenalineRush:CDUp() then
+        if not Buff.AdrenalineRush:Exist() and (not finishConditionOutlaw or not Talent.ImprovedAdrenalineRush) or stealthedRogue and Talent.CrackShot and Talent.ImprovedAdrenalineRush and Player.ComboPoints <= 2 and GCD <= 0.5 then
+          Spell.AdrenalineRush:Cast(Player)
+        end
       end
     end
 
-    if (Target and Target.ValidEnemy and Target.Distance <= 5) or Player:CombatTime() > 0 or Player:CombatLeftTime() < 3
-    -- or        (DMW.Player.CombatLeft and DMW.Time - DMW.Player.CombatLeft < 3)
-    then -- (Target and Target.ValidEnemy and Target.Distance <= 5)
+    if (Target and Target.ValidEnemy and Target.Distance <= 5) or Player.CombatTime > 0 or Player.CombatLeftTime < 3 then
       Tricks()
-      -- if HUD.Info == 2 then
-      --   if Player.EnergyDeficit >= 30 then
-      --     if Spell.BladeRush:CDUp() then
-      --       for _, Unit in ipairs(EnemyMelee) do
-      --         if TipsyGuy.GetDistance2D("player", Unit.GUID) <= 8 then
-      --           if Spell.BladeRush:Cast(Unit) then return true end
-      --         end
-      --       end
-      --     end
-      --     return true
-      --   end
-      -- end
-      -- master_assassin_remains=0&buff.dreadblades.down&(!buff.roll_the_bones.up|variable.rtb_reroll)
-      if Spell.RollTheBones:CDUp() and rtbReroll() then
-        if Spell.RollTheBones:Cast(Player) then return true end
+      -- print("highest = " .. RTBhighest .. ", lowest = " .. RTBlowest)
+      --       # Use Roll the Bones if reroll conditions are met, or with no buffs, or 2s before buffs expire with T31, or 7s before buffs expire with Vanish/Dance ready
+      -- actions.cds+=/roll_the_bones,if=variable.rtb_reroll|rtb_buffs=0|rtb_buffs.max_remains<=2&set_bonus.tier31_4pc|rtb_buffs.max_remains<=7&(cooldown.shadow_dance.ready|cooldown.vanish.ready)
+      -- print(RTBhighest)
+      if Spell.RollTheBones:CDUp() and not isKired() and (rtbRerollVar and not stealthedRogue or RTBCount == 0 or RTBhighest <= 2 or RTBhighest <= 7 and (CDs and (Spell.Vanish:CDUp() and HUD.VanishMode == 1 or Spell.ShadowDance:CDUp() and HUD.ShadowDance == 1))) then
+        -- print(RTBhighest, RTBCount, rtbRerollVar)
+        if Spell.RollTheBones:Cast(Player) then
+          -- report("rerolled", nil, true)
+          return true
+        end
         return true
       end
-      if HUD.BFMode == 1 and Buff.BladeFlurry:Remain() <= 1 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue then
-        if Spell.BladeFlurry:Cast(Player) then return true end
-      end
-      -- local rtbRerollVar = rtbReroll()
-      -- ghostly_strike,if=combo_points.deficit>=1+buff.broadside.up
-      if Talent.GhostlyStrike and HUD.GhostlyStrike == 1 and Spell.GhostlyStrike:IsReady() then
-        if Target and Target.TTD >= 8 and Player.ComboPointsDeficit >= 1 + num(Buff.Broadside:Exist()) then
-          if Spell.GhostlyStrike:Cast(Target) then return true end
+      if Talent.KeepItRolling and HUD.KirMode == 1 and CDs and not isKired() and not rtbRerollVar and Player.CombatTime > 0 then
+        -- rtb_count() >= 3 + (Player:HasTier(31, 4) and 1 or 0) and (min_buff_remains <= 1 or rtb_count() >= 5)
+        if Spell.KeepItRolling:CDUp() and RTBCount >= 4 and RTBhighest <= 30 and (RTBCount >= 5 or RTBlowestKir <= 2) then
+          Spell.KeepItRolling:Cast(Player)
+          -- print(DMW.Time, "K  I R ")
+          kiredTime = DMW.Time
         end
       end
-
+      if HUD.BFMode == 1 and Buff.BladeFlurry:Remain() <= 1 and EnemyMeleeCount >= 2 - num(Talent.UnderhandedUpperHand) and bfTTD > bfTTDvalue then
+        if Spell.BladeFlurry:Cast() then return true end
+      end
+      -- if Talent.GhostlyStrike and HUD.GhostlyStrike == 1 and Player.ComboPointsDeficit >= 1 then
+      --   if Spell.SinisterStrike:IsCastable("Melee") then
+      --     for _, Unit in ipairs(EnemyMelee) do
+      --       if Unit.TTD >= 5 then
+      --         if Spell.GhostlyStrike:Cast(Unit) then return true end
+      --       end
+      --     end
+      --   end
+      -- end
       if Talent.MarkOfDeath and Spell.MarkOfDeath:IsReady() and Player.ComboPointsDeficit > 0 then
         if MarkOfDeathAOE() then return true end
       end
-      -- print(rtbRerollVar)
-
-
-      -- if Player.Covenant == "Kyrian" and Spell.EchoingReprimand:IsCastable(5) and CDs and Player.ComboPointsDeficit >= 2 then
-      --   for _, Unit in ipairs(EnemyMelee) do if Spell.EchoingReprimand:Cast(Unit) then return true end end
-      -- end
-      -- if Player.Covenant == "Venthyr" and Spell.Flagellation:IsCastable(5) and Player.ComboPointsDeficit == 0 then
-      --   for _, Unit in ipairs(EnemyMelee) do if Spell.Flagellation:Cast(Unit) then return true end end
-      -- end
-      -- if Player.Covenant == "Kyrian" then
-      --   if (Buff.Kyrian2p:Stacks() == 2 and Player.ComboPoints == 2) or
-      --       (Buff.Kyrian3p:Stacks() == 3 and Player.ComboPoints == 3) or
-      --       (Buff.Kyrian4p:Stacks() == 4 and Player.ComboPoints == 4) then
-      --     -- print("kyrian".. Player.ComboPoints)
-      --     if OutlawFinishers(true) then return true end
-      --   end
-      -- end
-
-      -- For HO builds, Vanish > Ambush is used when Audacity is not active and you are not capped on Opportunity stacks. Even if you use Find Weakness, FW uptime is so high you don't need to plan around it for Vanish.
-      -- shadow_dance,if=!talent.keep_it_rolling&variable.shadow_dance_condition&buff.slice_and_dice.up&(variable.finish_condition|talent.hidden_opportunity)&(!talent.hidden_opportunity|!cooldown.vanish.ready)
-      -- print(vanishambush)
-      if HUD.VanishMode == 1 and HUD.Info == 1 and EnemyMeleeCount >= 1 and Target and Target.TTD >= 10 and
+      if HUD.VanishMode == 1 and HUD.Info ~= 3 and EnemyMeleeCount >= 1 and Target and Target.TTD >= 6 and
           Buff.SliceAndDice:Exist() and
           not Buff.Stealth:Exist() and not Buff.StealthSubterfuge:Exist()
           -- and GCD <= 0.2
           and not Buff.Subterfuge:Exist() and not isShadowDanced()
-          and Player.ComboPointsDeficit >= 3 and
-          ((Player.Energy > 50 and Buff.Opportunity:Stacks() == 3) or Buff.Opportunity:Stacks() == 0)
-          and
-          (
-            Spell.Vanish:CDUp() or
-            Spell.Vanish:CD() < TTM(100) and Spell.Vanish:CD() < 2 and Buff.Opportunity:Stacks() == 0) and
-          not Buff.Audacity:Exist() and GCD < 0.4 and
-          (not Buff.Opportunity:Exist() or not Talent.Subterfuge and Buff.Opportunity:Stacks() <= 3) then
-        if Setting("Pooling for SD/Vanish") and (Player.Energy <= 50 or Talent.Subterfuge and TTM(150) > 2) then
-          if HUD.BladerushMode == 1 and Spell.BladeRush:CDUp() then
-            for _, Unit in ipairs(EnemyMelee) do
-              if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
-                if Spell.BladeRush:Cast(Unit) then return true end
-              end
-            end
-          end
-          if (
-                HUD.BFMode == 1 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue and
-                (
-                  Buff.BladeFlurry:Remain() < 1.5 or Buff.BladeFlurry:Remain() < 4 and Talent.Subterfuge and TTM(150) < 3
-                )
-              ) then
-            if Spell.BladeFlurry:Cast(Player) then return true end
-            -- if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
-            --   return true
-            -- end
-          end
-          report("Pooling Vanish")
-          return true
-        end
-        if (
-              HUD.BFMode == 1 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue and
-              Buff.BladeFlurry:Remain() < 4 and Talent.Subterfuge
-            ) then
-          if Spell.BladeFlurry:Cast(Player) then return true end
-          if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
-            return true
-          end
-          -- return
-        end
+          and (Player.ComboPointsDeficit <= 1) and Spell.BetweenTheEyes:CD() <= 0.1 and
+          -- ((Player.Energy > 50 and Buff.Opportunity:Stacks() == 3) or Buff.Opportunity:Stacks() == 0)
+
+
+          Spell.Vanish:CDUp() and GCD < 0.1
+      then
+        -- if Setting("Pooling for SD/Vanish") and (Player.Energy <= 50 or Talent.Subterfuge and TTM(150) > 2) then
+        --   if HUD.BladerushMode == 1 and Spell.BladeRush:CDUp() then
+        --     for _, Unit in ipairs(EnemyMelee) do
+        --       if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
+        --         if Spell.BladeRush:Cast(Unit) then return true end
+        --       end
+        --     end
+        --   end
+        --   if (
+        --         HUD.BFMode == 1 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue and
+        --         (
+        --           Buff.BladeFlurry:Remain() < 1.5 or Buff.BladeFlurry:Remain() < 4 and Talent.Subterfuge and TTM(150) < 3
+        --         )
+        --       ) then
+        --     if Spell.BladeFlurry:Cast(Player) then return true end
+        --     -- if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
+        --     --   return true
+        --     -- end
+        --   end
+        --   report("Pooling Vanish")
+        --   return true
+        -- end
+        -- if (
+        --       HUD.BFMode == 1 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue and
+        --       Buff.BladeFlurry:Remain() < 4 and Talent.Subterfuge
+        --     ) then
+        --   if Spell.BladeFlurry:Cast(Player) then return true end
+        --   if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
+        --     return true
+        --   end
+        --   -- return
+        -- end
         if GCD > 0.15 then
           return true
         end
@@ -3132,7 +3374,7 @@ function Rogue.Rotation()
 
           vanishambush = DMW.Time
           DMW.Player.VanishAmbush = nil
-          Unlocked.StopAttack()
+          -- TipsyGuy.SecureCode("StopAttack")
           -- C_Timer.After(1, function() vanishambush = false
           -- end)
           -- if Spell.Ambush:CDUp() then
@@ -3148,42 +3390,41 @@ function Rogue.Rotation()
           return true
         end
       end
-      if HUD.ShadowDance == 1 and HUD.Info == 1 and EnemyMeleeCount >= 1 and Target and Target.TTD >= 8 and
+      if HUD.ShadowDance == 1 and HUD.Info ~= 3 and (HUD.VanishMode == 2 or Spell.Vanish:CD() > 1) and EnemyMeleeCount >= 1 and Target and Target.TTD >= 6 and
           Buff.SliceAndDice:Exist() and
           not Buff.Stealth:Exist() and not Buff.StealthSubterfuge:Exist()
-          and GCD <= 0.15
+          and GCD <= 0.10
           and not Buff.Subterfuge:Exist()
           and not isVanished()
-          and Player.ComboPointsDeficit >= 3 and
-          (Spell.ShadowDance:CDUp() or Spell.ShadowDance:CD() < TTM(150) and Spell.ShadowDance:CD() < 2) and
-          not Buff.Audacity:Exist() and GCD < 0.1 and
-          (not Buff.Opportunity:Exist() or Setting("IgnoreFTH")) then
+          and (Player.ComboPointsDeficit <= 1) and
+          (Spell.ShadowDance:CDUp() or Spell.ShadowDance:CD() < TTM(150) and Spell.ShadowDance:CD() < 2)
+      then
         -- if Player.Energy <= 80 then
-        if Setting("Pooling for SD/Vanish") and TTM(150) > 2 then
-          if HUD.BladerushMode == 1 and Spell.BladeRush:CDUp() then
-            for _, Unit in ipairs(EnemyMelee) do
-              if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
-                if Spell.BladeRush:Cast(Unit) then return true end
-              end
-            end
-          end
-          if (HUD.BFMode == 1 and Buff.BladeFlurry:Remain() <= 7 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue) and
-              TTM(150) < 4 then
-            if Spell.BladeFlurry:Cast(Player) then return true end
-            -- if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
-            --   return true
-            -- end
-          end
-          report("Pooling ShadowDance")
-          return true
-        end
-        if (HUD.BFMode == 1 and Buff.BladeFlurry:Remain() <= 7 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue)
-        then
-          if Spell.BladeFlurry:Cast(Player) then return true end
-          if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
-            return true
-          end
-        end
+        -- if Setting("Pooling for SD/Vanish") and TTM(150) > 2 then
+        --   if HUD.BladerushMode == 1 and Spell.BladeRush:CDUp() then
+        --     for _, Unit in ipairs(EnemyMelee) do
+        --       if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
+        --         if Spell.BladeRush:Cast(Unit) then return true end
+        --       end
+        --     end
+        --   end
+        --   if (HUD.BFMode == 1 and Buff.BladeFlurry:Remain() <= 7 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue) and
+        --       TTM(150) < 4 then
+        --     if Spell.BladeFlurry:Cast(Player) then return true end
+        --     -- if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
+        --     --   return true
+        --     -- end
+        --   end
+        --   report("Pooling ShadowDance")
+        --   return true
+        -- end
+        -- if (HUD.BFMode == 1 and Buff.BladeFlurry:Remain() <= 7 and EnemyMeleeCount >= 2 and bfTTD > bfTTDvalue)
+        -- then
+        --   if Spell.BladeFlurry:Cast(Player) then return true end
+        --   if Spell.BladeFlurry:CD() < 2 and Spell.BladeFlurry:CD() < TTM() then
+        --     return true
+        --   end
+        -- end
         if Spell.ShadowDance:Cast(Player) then
           shadowDancedTime = DMW.Time
           vanishambush = DMW.Time
@@ -3204,44 +3445,39 @@ function Rogue.Rotation()
           end
         end
       end
-      if stealthedRogue then
+
+      if stealthedRogue and Talent.HiddenOpportunity then
         OutlawStealth()
         return true
       end
-      if OutlawShouldFinish() then --or DMW.Time - Spell.PistolShot.LastCastTime <= 0.4 then
+      if finishConditionOutlaw then --or DMW.Time - Spell.PistolShot.LastCastTime <= 0.4 then
         if OutlawFinishers() then return true end
         return true
       end
       if OutlawBuilders() then return end
-      -- if Setting("BladeRush") and HUD.Info == 1 and Spell.BladeRush:CDUp() then
-      --   for _, Unit in ipairs(EnemyMelee) do
-      --     if TipsyGuy.GetDistance2D("player", Unit.GUID) <= brRange then
-      --       if Spell.BladeRush:Cast(Unit) then return true end
-      --     end
-      --   end
-      -- end
     end
-  elseif Player.SpecID == "Assassination" then
-    if MythicStuff() then return end
-    if (Target and Target.ValidEnemy and Target.Distance <= 5) or (DMW.Player.InstanceID ~= nil and DMW.Player.Combat) or
-        (Target and Target.Dummy) then
-      Tricks()
-      if stealthedRogue then if AssassinationStealthedAPL() then return true end end
-      -- if AssassinationExplosives() then return true end
-
-      if CDs and AssassinationCooldownsAPL() then return true end
-      if AssassinationSND() then return true end
-      if AssassinationDotAPL() then return true end
-      if AssassinationDirectAPL() then return true end
-      -- or AssassinationSND() or AssassinationDotAPL() or AssassinationDirectAPL() then return true end
-    end
-    -- if PrecombatAssassination() then return end
-    -- if (Target and Target.ValidEnemy and Target.Distance <= 5) or (DMW.Player.InstanceID ~= nil and DMW.Player.Combat) then
+    -- elseif Player.SpecID == "Assassination" then
+    --   if MythicStuff() then return end
+    --   if (Target and Target.ValidEnemy and Target.Distance <= 5) or (DMW.Player.InstanceID ~= nil and DMW.Player.Combat) or
+    --       (Target and Target.Dummy) then
     --     Tricks()
-    --     if stealthedRogue then
-    --         if AssassinationStealthedAPL() then return true end
-    --     end
-    --     if AssassinationDotAPL() or AssassinationDirectAPL() then return true end
+    --     if stealthedRogue then if AssassinationStealthedAPL() then return true end end
+    --     -- if AssassinationExplosives() then return true end
+
+    --     if CDs and AssassinationCooldownsAPL() then return true end
+    --     if AssassinationSND() then return true end
+    --     if AssassinationDotAPL() then return true end
+    --     if AssassinationDirectAPL() then return true end
+    --     -- or AssassinationSND() or AssassinationDotAPL() or AssassinationDirectAPL() then return true end
+    --   end
+    --   -- if PrecombatAssassination() then return end
+    --   -- if (Target and Target.ValidEnemy and Target.Distance <= 5) or (DMW.Player.InstanceID ~= nil and DMW.Player.Combat) then
+    --   --     Tricks()
+    --   --     if stealthedRogue then
+    --   --         if AssassinationStealthedAPL() then return true end
+    --   --     end
+    --   --     if AssassinationDotAPL() or AssassinationDirectAPL() then return true end
+    --   -- end
     -- end
   end
 end

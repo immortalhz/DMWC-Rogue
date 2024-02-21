@@ -48,12 +48,22 @@ function Rogue.Settings()
         }
       }
     end
-    UI.HUD.Options[getOptionNumber()] = {
-      BladerushMode = {
-        [1] = { Text = "|cFF00FF00 Bladerush", Tooltip = "" },
-        [2] = { Text = "Bladerush", Tooltip = "" }
+    if DMW.Player.Talents.BladeRush then
+      UI.HUD.Options[getOptionNumber()] = {
+        BladerushMode = {
+          [1] = { Text = "|cFF00FF00 Bladerush", Tooltip = "" },
+          [2] = { Text = "Bladerush", Tooltip = "" }
+        }
       }
-    }
+    end
+    if DMW.Player.Talents.KeepItRolling then
+      UI.HUD.Options[getOptionNumber()] = {
+        KirMode = {
+          [1] = { Text = "|cFF00FF00 KiR", Tooltip = "" },
+          [2] = { Text = "KiR", Tooltip = "" }
+        }
+      }
+    end
     if DMW.Player.Talents.ShadowDance then
       UI.HUD.Options[getOptionNumber()] = {
         ShadowDance = {
@@ -70,20 +80,28 @@ function Rogue.Settings()
     }
   elseif DMW.Player.SpecID == "Assassination" then
     UI.HUD.Options[getOptionNumber()] = {
-      PriorityMode = { [1] = { Text = "|cFF00FF00Priority", Tooltip = "" },
-        [2] = { Text = "AoE", Tooltip = "" } }
+      PriorityMode = {
+        [1] = { Text = "|cFF00FF00Priority", Tooltip = "" },
+        [2] = { Text = "AoE", Tooltip = "" }
+      }
     }
     UI.HUD.Options[getOptionNumber()] = {
-      TierSevenMode = { [1] = { Text = "|cFF00FF00TB/Exsang", Tooltip = "" },
-        [2] = { Text = "TB/Exsang", Tooltip = "" } }
+      TierSevenMode = {
+        [1] = { Text = "|cFF00FF00TB/Exsang", Tooltip = "" },
+        [2] = { Text = "TB/Exsang", Tooltip = "" }
+      }
     }
     UI.HUD.Options[getOptionNumber()] = {
-      VendettaMode = { [1] = { Text = "|cFF00FF00Vendetta Enabled", Tooltip = "" },
-        [2] = { Text = "No Vendetta", Tooltip = "" } }
+      VendettaMode = {
+        [1] = { Text = "|cFF00FF00Vendetta Enabled", Tooltip = "" },
+        [2] = { Text = "No Vendetta", Tooltip = "" }
+      }
     }
     UI.HUD.Options[getOptionNumber()] = {
-      VanishMode = { [1] = { Text = "|cFF00FF00Vanish Enabled", Tooltip = "" },
-        [2] = { Text = "No Vanish", Tooltip = "" } }
+      VanishMode = {
+        [1] = { Text = "|cFF00FF00Vanish Enabled", Tooltip = "" },
+        [2] = { Text = "No Vanish", Tooltip = "" }
+      }
     }
     -- UI.HUD.Options[getOptionNumber()] = {
     --     CCMode = {
@@ -140,8 +158,10 @@ function Rogue.Settings()
   end
   if DMW.Player.Talents.MarkedForDeath then
     UI.HUD.Options[getOptionNumber()] = {
-      MFD = { [1] = { Text = "|cFF00FF00MFD reset", Tooltip = "" },
-        [2] = { Text = "MFD any", Tooltip = "" } }
+      MFD = {
+        [1] = { Text = "|cFF00FF00MFD reset", Tooltip = "" },
+        [2] = { Text = "MFD any", Tooltip = "" }
+      }
     }
   end
   UI.AddHeader("General Options")
